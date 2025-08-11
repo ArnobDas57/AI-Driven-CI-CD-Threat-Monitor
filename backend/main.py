@@ -28,43 +28,46 @@ def root():
     return {"message": "AI-Driven CI/CD Threat Monitor backend is up and running 🚀"}
 
 
-# I think we use this endpoint as a button for users to manually scan when a push is detected
-# This button should run trivy and gitleaks for info, then feed it into the LLM
+# Helper function for the core scanning scanning logic
+async def run_scanners(repo_url: str, temp_dir: str):
+    trivy_result = subprocess.run(
+        ["trivy", "fs", temp_dir], capture_output=True, text=True
+    )
+
+    gitleaks_result = subprocess.run(
+        ["gitleaks", "detect", "--source", temp_dir, "--report-format", "json"],
+        capture_output=True,
+        text=True,
+    )
+
+    trivy_result.check_returncode()
+    gitleaks_result.check_returncode()
+
+    return {
+        "trivy_output": trivy_result.stdout,
+        "gitleaks_output": gitleaks_result.stdout,
+    }
+
+
 @app.post("/scan")
 async def scan_repo(payload: dict):
     repo_url = payload["repo_url"]
-    branch = payload.get("branch", "main")
-    commit = payload.get("commit")
-
-    # Clone github repo into temporary folder
     temp_dir = tempfile.mkdtemp()
-    subprocess.run(["git", "clone", repo_url, temp_dir], check=True)
-
-    # Run Trivy and GitLeaks on cloned repo
     try:
-        # Run Trivy first
-        trivy_result = subprocess.run(
-            ["trivy", "fs", temp_dir], capture_output=True, text=True
-        )
+        # Clone github repo
+        subprocess.run(["git", "clone", repo_url, temp_dir], check=True)
 
-        gitleaks_result = subprocess.run(
-            ["gitleaks", "detect", "--source", temp_dir, "--report-format", "json"],
-            capture_output=True,
-            text=True,
-        )
+        # Call the helper function
+        scan_outputs = await run_scanners(repo_url, temp_dir)
 
         return {
             "status": "scanned",
             "repo": repo_url,
-            "trivy_output": trivy_result.stdout,
-            "gitleaks_output": gitleaks_result.stdout,
+            **scan_outputs,  # Unpack the dictionary here
         }
-
     except subprocess.CalledProcessError as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
     finally:
-        # Remove the temporary directory
         shutil.rmtree(temp_dir)
 
 
@@ -83,11 +86,5 @@ async def handle_webhook(request: Request):
     commit = payload["after"]
 
     print(f"Webhook received:\nRepo: {repo_url}\nBranch: {branch}\nCommit: {commit}")
-
-    # Trigger the scan route after webhook is created
-    client = TestClient(app)
-    client.post(
-        "/scan", json={"repo_url": repo_url, "branch": branch, "commit": commit}
-    )
 
     return {"status": "received", "repo": repo_url, "branch": branch, "commit": commit}
