@@ -5,6 +5,8 @@ from pathlib import Path
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 import json
+import os
+from datetime import datetime, timezone
 
 app = FastAPI()
 
@@ -29,36 +31,111 @@ def run_cmd(cmd: list[str], cwd: str | None = None, check: bool = True,
             f"Command failed: {' '.join(cmd)}\n"
             f"exit={e.returncode}\nstdout:\n{e.stdout}\nstderr:\n{e.stderr}"
         ) from e
-    
-def _safe_json_loads(s: str, default):
-    try:
-        return json.loads(s)
-    except Exception:
-        return default
-    
-def _summarize_trivy(data: dict) -> dict:
-    # Trivy FS JSON typically has a top-level "Results": [...]
-    vulns = secrets = misconfigs = targets = 0
-    for res in (data.get("Results") or []):
-        targets += 1
-        vulns += len(res.get("Vulnerabilities") or [])
-        misconfigs += len(res.get("Misconfigurations") or [])
-        # Secrets are reported under "Secrets" list when secret scanner is enabled
-        secrets += len(res.get("Secrets") or [])
-    return {
-        "targets_scanned": targets,
-        "vulnerabilities": vulns,
-        "misconfigurations": misconfigs,
-        "secrets": secrets,
-    }
 
-def _summarize_gitleaks(data) -> dict:
-    # Gitleaks --report-format json returns a list of findings
-    if isinstance(data, list):
-        return {"leaks": len(data)}
-    if isinstance(data, dict) and "findings" in data:
-        return {"leaks": len(data.get("findings") or [])}
-    return {"leaks": 0}
+def _safe_json_loads(s: str, default):
+    try: return json.loads(s)
+    except Exception: return default
+
+def _mask(s: str | None, keep_start=4, keep_end=2):
+    if not s: return s
+    n = len(s)
+    if n <= keep_start + keep_end: return "*" * n
+    return s[:keep_start] + "*" * (n - keep_start - keep_end) + s[-keep_end:]
+
+def _read_snippet(root: str, rel_file: str | None, line: int | None, ctx=2):
+    if not rel_file or not line: return None
+    try:
+        p = Path(root) / rel_file
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        line = int(line)
+        s = max(1, line - ctx); e = min(len(lines), line + ctx)
+        return {"start_line": s, "end_line": e, "code": "\n".join(lines[s-1:e])}
+    except Exception:
+        return None
+
+def _summarize_trivy(trivy_json: dict, temp_dir: str):
+    findings = []
+    for res in (trivy_json.get("Results") or []):
+        target = res.get("Target")
+        # Secrets
+        for sec in (res.get("Secrets") or []):
+            findings.append({
+                "tool": "trivy",
+                "type": "secret",
+                "rule_id": sec.get("RuleID"),
+                "title": sec.get("Title") or sec.get("RuleID"),
+                "severity": sec.get("Severity") or "UNKNOWN",
+                "file": target,
+                "start_line": sec.get("StartLine"),
+                "end_line": sec.get("EndLine"),
+                "match": _mask(sec.get("Match")),
+                "snippet": _read_snippet(temp_dir, target, sec.get("StartLine")),
+            })
+        # Vulnerabilities
+        for v in (res.get("Vulnerabilities") or []):
+            findings.append({
+                "tool": "trivy",
+                "type": "vulnerability",
+                "cve": v.get("VulnerabilityID"),
+                "pkg": v.get("PkgName"),
+                "installed": v.get("InstalledVersion"),
+                "fixed": v.get("FixedVersion"),
+                "severity": v.get("Severity"),
+                "description": v.get("Description"),
+                "primary_url": v.get("PrimaryURL"),
+                "file": target,
+            })
+        # Misconfigurations
+        for m in (res.get("Misconfigurations") or []):
+            cm = m.get("CauseMetadata") or {}
+            findings.append({
+                "tool": "trivy",
+                "type": "misconfiguration",
+                "id": m.get("ID"),
+                "title": m.get("Title"),
+                "severity": m.get("Severity"),
+                "description": m.get("Description"),
+                "message": m.get("Message"),
+                "resolution": m.get("Resolution"),
+                "file": target,
+                "start_line": (cm.get("StartLine") or cm.get("StartLineNumber")),
+                "end_line": (cm.get("EndLine") or cm.get("EndLineNumber")),
+                "snippet": _read_snippet(temp_dir, target, cm.get("StartLine") or cm.get("StartLineNumber")),
+            })
+    return findings
+
+def _summarize_gitleaks(gitleaks_json, temp_dir: str):
+    # gitleaks returns a list (or sometimes {"findings":[...]})
+    items = gitleaks_json if isinstance(gitleaks_json, list) else (gitleaks_json.get("findings") or [])
+    findings = []
+    for f in items:
+        findings.append({
+            "tool": "gitleaks",
+            "type": "secret",
+            "rule_id": f.get("RuleID") or f.get("Rule"),
+            "description": f.get("Description"),
+            "file": f.get("File") or f.get("FilePath"),
+            "start_line": f.get("StartLine"),
+            "end_line": f.get("EndLine"),
+            "secret": _mask(f.get("Secret") or f.get("Match")),
+            "entropy": f.get("Entropy"),
+            "tags": f.get("Tags"),
+            "snippet": _read_snippet(temp_dir, f.get("File") or f.get("FilePath"), f.get("StartLine")),
+        })
+    return findings
+
+def build_llm_payload(repo_url: str, branch: str, commit: str, temp_dir: str,
+                      trivy_json: dict, gitleaks_json) -> dict:
+    findings = []
+    findings += _summarize_trivy(trivy_json, temp_dir)
+    findings += _summarize_gitleaks(gitleaks_json, temp_dir)
+    return {
+        "repo": repo_url,
+        "branch": branch,
+        "commit": commit,
+        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "findings": findings,
+    }
 
 def scan_repo_impl(repo_url: str, branch: str = "main", commit: str | None = None) -> dict:
     temp_dir = tempfile.mkdtemp(prefix="scan-")
@@ -87,8 +164,11 @@ def scan_repo_impl(repo_url: str, branch: str = "main", commit: str | None = Non
         trivy_json = _safe_json_loads(trivy_out or "{}", {})
         gitleaks_json = _safe_json_loads(gitleaks_out or "[]", [])
 
-        trivy_summary = _summarize_trivy(trivy_json) if trivy_rc == 0 else None
-        gitleaks_summary = _summarize_gitleaks(gitleaks_json) if gitleaks_rc == 0 else None
+        llm_input = build_llm_payload(repo_url, branch, commit, temp_dir, trivy_json, gitleaks_json)
+
+        # ----- THIS IS FOR ME TO SEE RESULTS -----
+        trivy_summary = _summarize_trivy(trivy_json, temp_dir) if trivy_rc == 0 else None
+        gitleaks_summary = _summarize_gitleaks(gitleaks_json, temp_dir) if gitleaks_rc == 0 else None
         
         summary_payload = {
             "repo": repo_url,
@@ -100,6 +180,7 @@ def scan_repo_impl(repo_url: str, branch: str = "main", commit: str | None = Non
             },
         }
         print("SCAN COMPLETE:", json.dumps(summary_payload, indent=2))
+        # -----------------------------------------
 
         # Build a clean response
         return {
@@ -108,26 +189,26 @@ def scan_repo_impl(repo_url: str, branch: str = "main", commit: str | None = Non
             "branch": branch,
             "commit": commit,
             "summary": {
-                "trivy": trivy_summary,
-                "gitleaks": gitleaks_summary,
+                "trivy": _summarize_trivy(trivy_json, temp_dir) and {
+                    "counts": {
+                        "targets_scanned": len(trivy_json.get("Results") or []),
+                        "vulnerabilities": sum(len(r.get("Vulnerabilities") or []) for r in (trivy_json.get("Results") or [])),
+                        "misconfigurations": sum(len(r.get("Misconfigurations") or []) for r in (trivy_json.get("Results") or [])),
+                        "secrets": sum(len(r.get("Secrets") or []) for r in (trivy_json.get("Results") or [])),
+                    }
+                },
+                "gitleaks": {"leaks": len(llm_input["findings"]) - sum(len(r.get("Vulnerabilities") or []) + len(r.get("Misconfigurations") or []) + len(r.get("Secrets") or []) for r in (trivy_json.get("Results") or []))}
             },
-            "trivy": {
-                "returncode": trivy_rc,
-                "stderr": trivy_err,
-                "json": trivy_json,   # parsed results
-            },
-            "gitleaks": {
-                "returncode": gitleaks_rc,
-                "stderr": gitleaks_err,
-                "json": gitleaks_json,  # parsed results
-            },
+            # CHANGE THIS TO LLM OUTPUT, USE THE INPUT WITHIN SCAN
+            "llm_input": llm_input,
+            "trivy": {"returncode": trivy_rc, "stderr": trivy_err, "json": trivy_json},
+            "gitleaks": {"returncode": gitleaks_rc, "stderr": gitleaks_err, "json": gitleaks_json},
         }
-
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 @app.post("/scan")
-async def scan_repo(payload: dict):
+async def scan_handler(payload: dict):
     try:
         data = scan_repo_impl(
             repo_url=payload["repo_url"],
