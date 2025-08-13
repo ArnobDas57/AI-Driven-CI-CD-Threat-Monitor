@@ -1,13 +1,17 @@
 from fastapi.testclient import TestClient
 from unittest.mock import patch
 import subprocess
-import main
+import backend.main as main
 
 client = TestClient(main.app)
 
 
 # Function for local testing
 def test_scan_repo_mocked():
+    # Mock Git Clone Output
+    mock_git_clone = subprocess.CompletedProcess(
+        args=["git", "clone"], returncode=0, stdout="Mocked git clone", stderr=""
+    )
     # Mock Trivy output
     mock_trivy = subprocess.CompletedProcess(
         args=["trivy"], returncode=0, stdout="Mocked Trivy output", stderr=""
@@ -17,8 +21,10 @@ def test_scan_repo_mocked():
         args=["gitleaks"], returncode=0, stdout="Mocked Gitleaks output", stderr=""
     )
 
-    # Patch subprocess.run so it doesn't actually run scanners
-    with patch("main.subprocess.run", side_effect=[mock_trivy, mock_gitleaks]):
+    with patch(
+        "backend.main.subprocess.run",
+        side_effect=[mock_git_clone, mock_trivy, mock_gitleaks],
+    ):
         response = client.post(
             "/scan", json={"repo_url": "https://github.com/example/repo.git"}
         )
