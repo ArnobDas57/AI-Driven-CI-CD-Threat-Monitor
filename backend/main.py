@@ -1,26 +1,19 @@
-# SETTING UP BACKEND
-import datetime
-import logging
-import os
-import shutil
-import subprocess
-import tempfile
-
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+# main.py (API)
+import os, shutil, tempfile, subprocess, datetime, json, logging
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
+from rq import Queue
+from redis import Redis
+from uuid import uuid4
 
-# Load environment variables
 load_dotenv()
-
-# Logging configuration
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,97 +22,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Redis (use REDIS_URL in cloud, e.g. Upstash/Redis Cloud)
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+redis_conn = Redis.from_url(REDIS_URL)
+q = Queue("scans", connection=redis_conn)
+
 
 @app.get("/")
 def root():
     return {"message": "AI-Driven CI/CD Threat Monitor backend is up and running 🚀"}
 
 
-# Helper function for running scanners
-async def run_scanners(temp_dir: str):
-    try:
-        trivy_result = subprocess.run(
-            ["trivy", "fs", temp_dir], capture_output=True, text=True, check=True
-        )
-        gitleaks_result = subprocess.run(
-            ["gitleaks", "detect", "--source", temp_dir, "--report-format", "json"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Scanner subprocess failed: {e}")
-        raise
-
-    return {
-        "trivy_output": trivy_result.stdout,
-        "gitleaks_output": gitleaks_result.stdout,
-    }
-
-
-@app.post("/scan")
-async def scan_repo(payload: dict):
+@app.post("/scan", status_code=202)
+def create_scan(payload: dict):
     repo_url = payload.get("repo_url")
     branch = payload.get("branch", "main")
-
     if not repo_url:
         raise HTTPException(status_code=400, detail="repo_url is required")
 
-    temp_dir = tempfile.mkdtemp()
-    logging.info(f"Starting scan for repo {repo_url} on branch {branch}")
+    # Create a job id so clients can poll without waiting
+    job_id = str(uuid4())
+    logging.info(f"Enqueuing scan: {repo_url} (branch={branch}, job_id={job_id})")
 
-    try:
-        # Clone Git repo (specific branch if provided)
-        subprocess.run(
-            ["git", "clone", "--branch", branch, repo_url, temp_dir],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        logging.info("Repo cloned successfully")
-
-        # Run Trivy & Gitleaks scanners
-        scan_outputs = await run_scanners(temp_dir)
-        logging.info("Scanning completed successfully")
-
-        return {
-            "status": "scanned",
-            "repo": repo_url,
-            "branch": branch,
-            "trivy_output": scan_outputs["trivy_output"],
-            "gitleaks_output": scan_outputs["gitleaks_output"],
-            "scan_time": str(datetime.datetime.utcnow()),
-        }
-
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Subprocess failed: {e}")
-        return JSONResponse(
-            status_code=500, content={"error": f"Subprocess failed: {e}"}
-        )
-    except Exception as e:
-        logging.error(f"Unexpected error: {e}")
-        return JSONResponse(
-            status_code=500, content={"error": f"Unexpected error: {str(e)}"}
-        )
-    finally:
-        shutil.rmtree(temp_dir)
-        logging.info(f"Cleaned up temporary directory {temp_dir}")
+    # Enqueue background work in the worker container
+    q.enqueue(
+        "worker.run_scan_job",
+        job_id,
+        repo_url,
+        branch,
+        job_timeout=60 * 15,  # 15m hard limit
+        result_ttl=60 * 60 * 24,  # keep result 24h
+    )
+    return {"status": "queued", "job_id": job_id, "status_url": f"/scans/{job_id}"}
 
 
-@app.post("/llm")
-async def llm_response(request: Request):
-    # Langchain and Open AI analysis (NEXT STEP)
-    return ""
-
-
-# This should detect a push event from a github thats set up correctly, and gets all the info needed for trivy and gitleaks
-@app.post("/webhook")
-async def handle_webhook(request: Request):
-    payload = await request.json()
-    repo_url = payload["repository"]["clone_url"]
-    branch = payload["ref"].split("/")[-1]
-    commit = payload["after"]
-
-    print(f"Webhook received:\nRepo: {repo_url}\nBranch: {branch}\nCommit: {commit}")
-
-    return {"status": "received", "repo": repo_url, "branch": branch, "commit": commit}
+@app.get("/scans/{job_id}")
+def get_scan_status(job_id: str):
+    data = redis_conn.get(f"scan:{job_id}")
+    if not data:
+        # Could be queued/running or unknown
+        state = redis_conn.get(f"scan:{job_id}:state")
+        if state:
+            return {"job_id": job_id, "state": state.decode()}
+        return JSONResponse(status_code=404, content={"error": "job not found"})
+    result = json.loads(data)
+    return result
