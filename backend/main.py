@@ -15,18 +15,16 @@ def run_cmd(cmd: list[str], cwd: str | None = None, check: bool = True,
             cmd,
             cwd=cwd,
             capture_output=True,
-            text=True,                 # keep text mode
-            encoding="utf-8",          # <- force UTF-8
-            errors="replace",          # <- avoid crashes on odd bytes
+            text=True,              
+            encoding="utf-8",       
+            errors="replace",  
             env=env,
             check=check,
         )
         return (proc.returncode, proc.stdout, proc.stderr)
     except FileNotFoundError as e:
-        # e.g., git/trivy/gitleaks not installed or not on PATH
         raise RuntimeError(f"Command not found: {cmd[0]}") from e
     except subprocess.CalledProcessError as e:
-        # capture_output=True ensures e.stdout/e.stderr exist
         raise RuntimeError(
             f"Command failed: {' '.join(cmd)}\n"
             f"exit={e.returncode}\nstdout:\n{e.stdout}\nstderr:\n{e.stderr}"
@@ -73,7 +71,7 @@ def scan_repo_impl(repo_url: str, branch: str = "main", commit: str | None = Non
         else:
             run_cmd(["git", "clone", "--depth", "1", "--branch", branch, repo_url, temp_dir])
 
-        # Run tools (JSON output, no progress/banner)
+        # Run tools
         trivy_rc, trivy_out, trivy_err = run_cmd(
             ["trivy", "fs", "--no-progress", "--format", "json",
              "--scanners", "vuln,secret,misconfig", temp_dir],
@@ -85,13 +83,12 @@ def scan_repo_impl(repo_url: str, branch: str = "main", commit: str | None = Non
             check=False
         )
 
-        # ---- HERE is where the parsing belongs ----
+        # Parsing
         trivy_json = _safe_json_loads(trivy_out or "{}", {})
         gitleaks_json = _safe_json_loads(gitleaks_out or "[]", [])
 
         trivy_summary = _summarize_trivy(trivy_json) if trivy_rc == 0 else None
         gitleaks_summary = _summarize_gitleaks(gitleaks_json) if gitleaks_rc == 0 else None
-        # -------------------------------------------
         
         summary_payload = {
             "repo": repo_url,
@@ -104,7 +101,7 @@ def scan_repo_impl(repo_url: str, branch: str = "main", commit: str | None = Non
         }
         print("SCAN COMPLETE:", json.dumps(summary_payload, indent=2))
 
-        # Build a clean response (keep raw stderr for debugging)
+        # Build a clean response
         return {
             "status": "scanned",
             "repo": repo_url,
@@ -144,12 +141,12 @@ async def scan_repo(payload: dict):
 @app.post("/webhook")
 async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     payload = await request.json()
-    repo_url = payload["repository"]["clone_url"]  # e.g., https://github.com/.../.git
+    repo_url = payload["repository"]["clone_url"]
     branch = payload["ref"].split("/")[-1]
     commit = payload["after"]
 
     print(f"Webhook received:\nRepo: {repo_url}\nBranch: {branch}\nCommit: {commit}")
 
-    # Kick off in background so GitHub gets a fast 200
+    # Do in background so GitHub gets a fast 200
     background_tasks.add_task(scan_repo_impl, repo_url, branch, commit)
     return {"status": "accepted", "repo": repo_url, "branch": branch, "commit": commit}
