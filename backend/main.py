@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 app = FastAPI()
 
+# For running shell commands
 def run_cmd(cmd: list[str], cwd: str | None = None, check: bool = True,
             env: dict | None = None) -> tuple[int, str, str]:
     try:
@@ -32,16 +33,20 @@ def run_cmd(cmd: list[str], cwd: str | None = None, check: bool = True,
             f"exit={e.returncode}\nstdout:\n{e.stdout}\nstderr:\n{e.stderr}"
         ) from e
 
+# For parsing JSON safely, returns default if parsing fails
 def _safe_json_loads(s: str, default):
     try: return json.loads(s)
     except Exception: return default
 
+# For hiding parts of secret keys
 def _mask(s: str | None, keep_start=4, keep_end=2):
     if not s: return s
     n = len(s)
     if n <= keep_start + keep_end: return "*" * n
     return s[:keep_start] + "*" * (n - keep_start - keep_end) + s[-keep_end:]
 
+# Read a small code snippet (±ctx lines) from a file path relative to `root`.
+# Returns None if file/line missing or unreadable.
 def _read_snippet(root: str, rel_file: str | None, line: int | None, ctx=2):
     if not rel_file or not line: return None
     try:
@@ -53,6 +58,8 @@ def _read_snippet(root: str, rel_file: str | None, line: int | None, ctx=2):
     except Exception:
         return None
 
+# Convert Trivy's JSON output into a unified "findings" list covering:
+# - secrets, vulnerabilities, and misconfigurations, plus small code snippets when possible.
 def _summarize_trivy(trivy_json: dict, temp_dir: str):
     findings = []
     for res in (trivy_json.get("Results") or []):
@@ -104,6 +111,7 @@ def _summarize_trivy(trivy_json: dict, temp_dir: str):
             })
     return findings
 
+# Convert Gitleaks JSON (list or {"findings":[...]}) into unified "findings".
 def _summarize_gitleaks(gitleaks_json, temp_dir: str):
     # gitleaks returns a list (or sometimes {"findings":[...]})
     items = gitleaks_json if isinstance(gitleaks_json, list) else (gitleaks_json.get("findings") or [])
@@ -124,6 +132,7 @@ def _summarize_gitleaks(gitleaks_json, temp_dir: str):
         })
     return findings
 
+# Build the LLM input payload with repo metadata, timestamp, and normalized findings.
 def build_llm_payload(repo_url: str, branch: str, commit: str, temp_dir: str,
                       trivy_json: dict, gitleaks_json) -> dict:
     findings = []
@@ -137,6 +146,8 @@ def build_llm_payload(repo_url: str, branch: str, commit: str, temp_dir: str,
         "findings": findings,
     }
 
+# Clone a repo (branch or single commit), run Trivy & Gitleaks, normalize results,
+# and return a summary + raw tool outputs for debugging.
 def scan_repo_impl(repo_url: str, branch: str = "main", commit: str | None = None) -> dict:
     temp_dir = tempfile.mkdtemp(prefix="scan-")
     try:
