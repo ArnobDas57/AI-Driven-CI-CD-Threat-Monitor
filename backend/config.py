@@ -19,3 +19,10 @@ else:
 
 # Parse/validate once at startup; raise if broken
 PRIVATE_KEY_OBJ = serialization.load_pem_private_key(pem.encode("utf-8"), password=None)
+
+# --- OpenAI / LLM ---
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"].strip()
+
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+LLM_MAX_FINDINGS = int(os.getenv("LLM_MAX_FINDINGS", "150"))
+LLM_MAX_EVIDENCE_CHARS = int(os.getenv("LLM_MAX_EVIDENCE_CHARS", "800"))

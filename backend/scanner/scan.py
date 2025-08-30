@@ -2,12 +2,18 @@ import shutil, tempfile
 from datetime import datetime, timezone
 from utils.shell import run_cmd, _safe_json_loads
 from scanner.summarize import _summarize_trivy, _summarize_gitleaks
+from utils.shell import _mask
 
 def build_llm_payload(repo_url: str, branch: str, commit: str, temp_dir: str,
                       trivy_json: dict, gitleaks_json) -> dict:
     findings = []
     findings += _summarize_trivy(trivy_json, temp_dir)
     findings += _summarize_gitleaks(gitleaks_json, temp_dir)
+
+    for f in findings:
+        if "evidence" in f and isinstance(f["evidence"], str):
+            f["evidence"] = _mask(f["evidence"], keep_start=4, keep_end=2)
+
     return {
         "repo": repo_url, "branch": branch, "commit": commit,
         "scanned_at": datetime.now(timezone.utc).isoformat(),

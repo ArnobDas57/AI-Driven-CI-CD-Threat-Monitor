@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 import json
 from security.github_app import verify_signature, installation_token
-from scanner.scan import scan_repo_impl
+from scanner.pipeline import run_scan_and_analyze
 
 router = APIRouter()
 
@@ -34,5 +34,5 @@ async def handle_github_webhook(request: Request, background_tasks: BackgroundTa
     repo_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
 
     print(f"[webhook] {owner}/{repo}@{branch} {commit[:7]} (inst {inst_id})")
-    background_tasks.add_task(scan_repo_impl, repo_url, branch, commit)
+    background_tasks.add_task(run_scan_and_analyze, repo_url, branch, commit)
     return {"status": "accepted", "owner": owner, "repo": repo, "branch": branch, "commit": commit}

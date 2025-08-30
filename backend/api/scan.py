@@ -15,3 +15,5 @@ async def scan_handler(payload: dict):
         return data
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+# THIS NEEDS TO BE UPDATED TO MATCH AUTHORIZATION LIKE IN THE WEBHOOK/GITHUB ROUTES OR BE DELETED
