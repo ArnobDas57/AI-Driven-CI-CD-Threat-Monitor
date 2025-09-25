@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
-import { useState } from "react";
+import { useState, Suspense } from "react";
+import NewScanClient from './NewScanClient';
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,6 +14,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ChevronRight, Loader2, ShieldCheck } from "lucide-react";
+
+export const dynamic = 'force-dynamic';
 
 export default function NewScanPage() {
   const params = useSearchParams();
@@ -172,3 +175,5 @@ export default function NewScanPage() {
     </div>
   );
 }
+
+
