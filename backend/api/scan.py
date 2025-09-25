@@ -13,7 +13,7 @@ class ScanRequest(BaseModel):
 
 @router.post("")
 async def scan(req: ScanRequest):
-    # TODO: clone shallow, run gitleaks/trivy (if you choose backend-run scans)
+    # TODO: clone shallow, run gitleaks/trivy (for backend-run scans)
     # return a fake response for now so UI works end-to-end
     return {
         "ok": True,

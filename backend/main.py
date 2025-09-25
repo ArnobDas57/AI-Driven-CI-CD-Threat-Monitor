@@ -1,4 +1,7 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from config import CORS_ORIGINS
+
 from api.webhooks import router as webhooks_router
 from api.scan import router as scan_router
 from api.ingest.github import router as ingest_router
@@ -13,7 +16,7 @@ app = FastAPI(title="ThreatLens API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],            # change for prod deploy: ["https://your-vercel.app"]
+    allow_origins=[o for o in CORS_ORIGINS if o],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -26,5 +29,4 @@ def root():
 app.include_router(ingest_github_router, prefix="/ingest/github", tags=["ingest"])
 app.include_router(webhook_github_router, prefix="/webhook/github", tags=["webhook"])
 app.include_router(webhook_gitlab_router, prefix="/webhook/gitlab", tags=["webhook"])
-
-app.include_router(scan_router, prefix="/scan", tags=["scan"])
+app.include_router(scan_router, prefix="/scan", tags=["scan"])  # o
