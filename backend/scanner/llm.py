@@ -90,3 +90,4 @@ def analyze_with_llm(scan_result: Dict[str, Any], *, model_name: Optional[str] =
             "top_threats": [],
             "fix_plan": [],
         }
+
