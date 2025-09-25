@@ -26,7 +26,7 @@ app.add_middleware(
 def root():
     return {"message": "ThreatLens backend is up 🚀"}
 
-app.include_router(ingest_github_router, prefix="/ingest/github", tags=["ingest"])
-app.include_router(webhook_github_router, prefix="/webhook/github", tags=["webhook"])
-app.include_router(webhook_gitlab_router, prefix="/webhook/gitlab", tags=["webhook"])
-app.include_router(scan_router, prefix="/scan", tags=["scan"])  # o
+app.include_router(ingest_router, prefix="/ingest/github", tags=["ingest"])
+app.include_router(github_webhook_router, prefix="/webhook/github", tags=["webhook"])
+app.include_router(gitlab_webhook_router, prefix="/webhook/gitlab", tags=["webhook"])
+app.include_router(scan_router, prefix="/scan", tags=["scan"])
